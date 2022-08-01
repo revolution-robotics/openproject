@@ -33,7 +33,7 @@
 #   git config --global core.excludesfile '~/.gitignore_global'
 
 # Ignore bundler config.
-/.bundle
+/.bundle*
 
 # Ignore all logfiles and tempfiles.
 *.log
@@ -142,3 +142,12 @@ acme.json
 
 # Generated seeders crowdin source file
 **/config/locales/en.seeders.yml
+
+# Local files
+/config/master.key
+*~
+*.diff
+# asdf-vm local versions of nodejs and ruby
+.tool-versions
+Gemfile.lock.*
+npm-install-error.txt
