@@ -1,0 +1,32 @@
+#!/usr/bin/env bash
+#
+# @(#) request-nginx-certs
+#
+: ${CERTBOT:="${HOME}/.asdf/shims/certbot"}
+: ${READLINK:='/usr/bin/readlink'}
+
+request-tls-certificates ()
+{
+    local email_address=$1
+    local fqdn=$2
+
+    $CERTBOT run \
+            --non-interactive \
+            --agree-tos \
+            --email "$email_address" \
+            --nginx \
+            --keep-until-expiring \
+            --preferred-challenges http \
+            -d "$fqdn"
+}
+
+if test ."$0" = ."${BASH_SOURCE[0]}"; then
+    declare script=$($READLINK -e "$0")
+    declare script_name=${script##*/}
+    declare script_dir=${script%/*}
+
+    declare email_address=$1
+    declare fqdn=$2
+
+    request-tls-certificates "$email_address" "$fqdn"
+fi
