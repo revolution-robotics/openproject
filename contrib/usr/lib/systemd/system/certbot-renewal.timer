@@ -1,0 +1,12 @@
+[Unit]
+Description=Certbot Certificate Renewal Timer
+Documentation=https://www.freedesktop.org/software/systemd/man/systemd.timer.html
+
+[Timer]
+OnCalendar=Mon,Fri *-*-* 02:30:00
+AccuracySec=10m
+RandomizedDelaySec=1h
+Persistent=true
+
+[Install]
+WantedBy=timers.target

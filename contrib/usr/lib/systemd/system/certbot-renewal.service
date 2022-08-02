@@ -1,0 +1,12 @@
+[Unit]
+Description=Certbot Certificate Renewal Service
+Documentation=https://eff-certbot.readthedocs.io/en/stable/using.html
+
+[Service]
+Type=oneshot
+Environment=HOME=/root
+ExecStart=/usr/bin/bash -l -c "certbot renew --agree-tos"
+ExecStartPost=/usr/bin/systemctl reload nginx
+
+[Install]
+WantedBy=multi-user.target

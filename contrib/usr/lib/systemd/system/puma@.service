@@ -1,0 +1,43 @@
+[Unit]
+Description=Puma Server for Web App %I
+Documentation=https://github.com/puma/puma/blob/master/docs/systemd.md
+After=network-online.target remote-fs.target nss-lookup.target
+
+# Uncomment for socket activation (see below)
+# Requires=puma.socket
+
+[Service]
+# Puma supports systemd's `Type=notify` and watchdog service
+# monitoring, if the [sd_notify](https://github.com/agis/ruby-sdnotify) gem is installed,
+# as of Puma 5.1 or later.
+# On earlier versions of Puma or JRuby, change this to `Type=simple` and remove
+# the `WatchdogSec` line.
+Type=notify
+
+# If your Puma process locks up, systemd's watchdog will restart it within seconds.
+WatchdogSec=10
+
+# Preferably configure a non-privileged user
+User=puma
+Group=puma
+
+# The path to your application code root directory.
+WorkingDirectory=/home/puma/%I
+
+# Helpful for debugging socket activation, etc.
+# Environment=PUMA_DEBUG=1
+
+# NB: Min/max threads should match threaded library settings, e.g.,
+# in config/database.yml see RAILS_MAX_THREADS environment variable.
+# WEB_CONCURRENCY (--workers N) should not exceed number of cores.
+ExecStartPre=/usr/bin/install -d -m 711 -o puma -g puma /run/puma/%I ; /usr/bin/install -d -m 751 -o puma -g puma /run/puma/%I/sockets ; /usr/bin/install -d -m 771 -o puma -g puma /run/puma/%I/pids
+ExecStart=/bin/bash -l -c 'sbin/puma --no-config --environment production --threads 5:5 --workers 2 --bind unix:///run/puma/%I/sockets/puma.sock --state /run/puma/%I/puma.state --control-url unix:///run/puma/%I/sockets/pumactl.sock --control-token %I --pidfile /run/puma/%I/pids/server.pid'
+
+# Allow puma time to create sockets...
+ExecStartPost=+/usr/bin/sleep 2 ; /usr/bin/chcon -R -t httpd_var_run_t /run/puma/%I/sockets
+ExecStop=/bin/bash -l -c 'sbin/pumactl --state /run/puma/%I/puma.state --control-url unix:///run/puma/%I/sockets/pumactl.sock --control-token %I --pidfile /run/puma/%I/pids/server.pid stop'
+
+Restart=always
+
+[Install]
+WantedBy=multi-user.target

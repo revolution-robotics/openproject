@@ -1,0 +1,22 @@
+[Unit]
+Description=Request TLS certificates for Web App %I.
+Documentation=https://eff-certbot.readthedocs.io/en/stable/using.html
+Requires=nginx.service puma@%i.service
+
+[Service]
+Type=oneshot
+Environment=HOME=/root
+ExecStartPre=/usr/bin/bash -c 'curl -sSf @SERVER-FQDN@ &>/dev/null'
+ExecStart=/usr/bin/bash -l -c 'certbot run \
+        --non-interactive \
+        --agree-tos \
+        --email @EMAIL_ADDRESS@ \
+        --nginx \
+        --keep-until-expiring \
+        --preferred-challenges http \
+        -d @SERVER-FQDN@'
+ExecStartPost=/usr/bin/systemctl disable certbot-run@%i.service
+
+
+[Install]
+WantedBy=multi-user.target
