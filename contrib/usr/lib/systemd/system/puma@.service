@@ -1,7 +1,7 @@
 [Unit]
-Description=Puma Server for Web App %I
+Description=Puma Server for Web App %i.
 Documentation=https://github.com/puma/puma/blob/master/docs/systemd.md
-After=network-online.target remote-fs.target nss-lookup.target
+After=network.target
 
 # Uncomment for socket activation (see below)
 # Requires=puma.socket
@@ -22,7 +22,7 @@ User=puma
 Group=puma
 
 # The path to your application code root directory.
-WorkingDirectory=/home/puma/%I
+WorkingDirectory=/home/puma/%i
 
 # Helpful for debugging socket activation, etc.
 # Environment=PUMA_DEBUG=1
@@ -30,12 +30,15 @@ WorkingDirectory=/home/puma/%I
 # NB: Min/max threads should match threaded library settings, e.g.,
 # in config/database.yml see RAILS_MAX_THREADS environment variable.
 # WEB_CONCURRENCY (--workers N) should not exceed number of cores.
-ExecStartPre=/usr/bin/install -d -m 711 -o puma -g puma /run/puma/%I ; /usr/bin/install -d -m 751 -o puma -g puma /run/puma/%I/sockets ; /usr/bin/install -d -m 771 -o puma -g puma /run/puma/%I/pids
-ExecStart=/bin/bash -l -c 'sbin/puma --no-config --environment production --threads 5:5 --workers 2 --bind unix:///run/puma/%I/sockets/puma.sock --state /run/puma/%I/puma.state --control-url unix:///run/puma/%I/sockets/pumactl.sock --control-token %I --pidfile /run/puma/%I/pids/server.pid'
+ExecStartPre=+/usr/bin/install -d -m 711 -o puma -g puma /run/puma/%i ; /usr/bin/install -d -m 751 -o puma -g puma /run/puma/%i/sockets ; /usr/bin/install -d -m 771 -o puma -g puma /run/puma/%i/pids
+ExecStart=/bin/bash -l -c 'RUBY_YJIT_ENABLE=1 sbin/puma --no-config --environment production --threads 5:5 --workers 2 --bind unix:///run/puma/%i/sockets/puma.sock --state /run/puma/%i/puma.state --control-url unix:///run/puma/%i/sockets/pumactl.sock --control-token %i --pidfile /run/puma/%i/pids/server.pid'
 
 # Allow puma time to create sockets...
-ExecStartPost=+/usr/bin/sleep 2 ; /usr/bin/chcon -R -t httpd_var_run_t /run/puma/%I/sockets
-ExecStop=/bin/bash -l -c 'sbin/pumactl --state /run/puma/%I/puma.state --control-url unix:///run/puma/%I/sockets/pumactl.sock --control-token %I --pidfile /run/puma/%I/pids/server.pid stop'
+ExecStartPost=+/usr/bin/sleep 2 ; /usr/bin/chcon -R -t httpd_var_run_t /run/puma/%i/sockets
+
+ExecReload=/bin/bash -l -c 'sbin/pumactl --state /run/puma/%i/puma.state --control-url unix:///run/puma/%i/sockets/pumactl.sock --control-token %i --pidfile /run/puma/%i/pids/server.pid phased-restart'
+
+ExecStop=/bin/bash -l -c 'sbin/pumactl --state /run/puma/%i/puma.state --control-url unix:///run/puma/%i/sockets/pumactl.sock --control-token %i --pidfile /run/puma/%i/pids/server.pid stop'
 
 Restart=always
 

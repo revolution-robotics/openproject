@@ -1,0 +1,295 @@
+#!/usr/bin/env bash
+#
+# @(#) update-age-recipients
+#
+# Copyright © 2022 Revolution Robotics, Inc.
+#
+# SYNOPSIS
+#
+#    update-age-recipients OPTIONS --file=SOPS-FILE [AGE-RECIPIENT [...]]
+#    OPTIONS:
+#        -C | --directory=DIR  - change to directory DIR before performing
+#                                any operations.
+#        -a | --add            - add the given age recipients to SOPS-FILE,
+#                                mutually exclusive with option --remove.
+#                                This is the default action.
+#        -r | --remove         - remove the given age recipients from
+#                                SOPS-FILE, mutually exclusive with option
+#                                --add.
+#
+# DESCRIPTION
+#
+#    Add (or remove) age recipients to (from) a given sops-generated,
+#    age-encrypted file. If no action is specified, the default is to
+#    add recipients. If no recipients are given on the command line,
+#    they are read from standard input, one per line.
+#
+
+: ${ED_CMD:='/usr/local/bin/ed'}
+: ${GETOPT_CMD:='/usr/bin/getopt'}
+: ${MKTEMP_CMD:='/usr/bin/mktemp'}
+: ${MV_CMD:='/bin/mv'}
+: ${READLINK_CMD:='/usr/bin/readlink'}
+: ${RM_CMD:='/bin/rm'}
+: ${SOPS_CMD:="${HOME}/.asdf/shims/sops"}
+: ${SORT_CMD:='/usr/bin/sort'}
+: ${YQ_CMD:="${HOME}/.asdf/shims/yq"}
+
+usage ()
+{
+    local status=${1:-0}
+
+    cat >&2 <<EOF
+Usage: update-age-recipients OPTIONS --file=SOPS-FILE [AGE-RECIPIENT [...]]
+OPTIONS:
+    -C | --directory=DIR  - change to directory DIR before performing any
+                            operations.
+    -a | --add            - add the given age recipients to SOPS-FILE,
+                            mutually exclusive with option --remove.
+                            This is the default action if non is specified.
+    -r | --remove         - remove the given age recipients from SOPS-FILE,
+                            mutually exclusive with option --add.
+EOF
+}
+
+assoc-list ()
+{
+    local -n _list=$1
+    local -n _assoc=$2
+
+    if test ."${_list[@]}" = .''; then
+        return
+    fi
+
+    local -i i
+
+    for i in "${!_list[@]}"; do
+        _assoc[${_list[i]}]=$(( i + 1 ))
+    done
+}
+
+is-element-of ()
+{
+    local -n list=$1
+    local element=$2
+
+    local -A assoc
+
+    assoc-list list assoc
+    (( assoc[${element}] > 0 ))
+}
+
+get-current-recipients ()
+{
+    local -n recipients=$1
+    local file=$2
+
+    mapfile -t recipients < <($YQ_CMD -r '.sops.age[] | .recipient' "$file" 2>/dev/null)
+
+    return $(( ${#recipients[*]} == 0 ))
+}
+
+get-recipient-updates ()
+{
+    local -n recipients=$1
+
+    if (( ${#recipients[*]} == 0 )); then
+        while read recipient; do
+            # Expand possibly comma-separated list of recipients into separate arguments.
+            OIFS=$IFS; IFS=",$IFS"; set -- $(echo "$recipient"); IFS=$OIFS
+            recipients+=( "$@" )
+        done
+    fi
+
+    return $(( ${#recipients[*]} == 0 ))
+}
+
+add-new-recipients ()
+{
+    local -n recipients=$1
+    local -n add_recipients=$2
+
+    local recipient=''
+
+    recipients+=( "${add_recipients[@]}" )
+}
+
+remove-existing-recipients ()
+{
+    local -n recipients=$1
+    local -n remove_recipients=$2
+
+    local recipient=''
+    local -a remaining_recipients=()
+
+    for recipient in "${recipients[@],,}"; do
+        if ! is-element-of remove_recipients "$recipient"; then
+            remaining_recipients+=( "$recipient" )
+        fi
+    done
+
+    recipients=( "${remaining_recipients[@]}" )
+}
+
+re-encrypt-file ()
+{
+    local -n recipients=$1
+    local file=$2
+
+    local suffix=''
+
+    case "${file##*.}" in
+        yml|YML)
+            suffix=yml
+            ;;
+        *)
+            suffix=json
+            ;;
+    esac
+
+    local -a unique_recipients=()
+
+    IFS=$'\n' unique_recipients=( $($SORT_CMD -u <<<"${recipients[*]}") ) || return $?
+
+    local file_basename=''
+    local file_directory=''
+
+    if [[ ."$file" =~ \..*/ ]]; then
+        file_basename=${file##*/}
+        file_directory=${file%/*}
+    else
+        file_basename=$file
+        file_directory=.
+    fi
+
+    local tmpdir=''
+
+    tmpdir=$($MKTEMP_CMD -d "${file_directory}/.XXXXXXX") || return $?
+
+    trap '$RM_CMD -rf "$tmpdir"; exit' 0 1 2 15 RETURN
+
+    local tmpfile1
+    local digits=$(printf "%09d\n" $(( ( RANDOM * RANDOM ) % 1000000000 )))
+
+    tmpfile1=$($MKTEMP_CMD "${tmpdir}/${file_basename}.XXXXXXX") || return $?
+    tmpfile2=${tmpdir}/${file_basename}.${digits}.${suffix}
+
+    $SOPS_CMD --decrypt --output "$tmpfile1" "$file" || return $?
+
+    EDITOR="$ED_CMD -s" $SOPS_CMD --age $(IFS=','; echo "${unique_recipients[*]}") "$tmpfile2" <<EOF || return $?
+,d
+r $tmpfile1
+wq
+EOF
+    $MV_CMD --force --backup "$tmpfile2" "$file" || return $?
+    $RM_CMD -rf "$tmpdir"
+
+    trap - 0 12 15 RETURN
+}
+
+parse-command-line ()
+{
+    local -n file=$1
+    local -n action=$2
+    local -n recipients=$3
+
+    local args
+    local -r shortopts=aC:f:hr
+    local -r longopts=add,directory:,file:,help,remove
+
+    shift 3
+    args=$(
+        $GETOPT_CMD --shell bash --options "$shortopts"  \
+                --longoptions "$longopts" --name "$script_name" -- "$@"
+        ) || return 1
+
+    eval set -- "$args"
+
+    local directory=''
+
+    while true; do
+        case "$1" in
+            -a|--add)
+                action=add
+                ;;
+            -C|--directory)
+                shift
+                if ! directory=$($READLINK_CMD -e "$1"); then
+                    usage
+                    return 1
+                fi
+                ;;
+            -f|--file)
+                shift
+
+                if [[ ."$1" =~ ^\./ ]]; then
+                    file=$1
+                elif test ."$directory" != .''; then
+                    file=${directory}/$1
+                else
+                    file=$1
+                fi
+
+                if ! test -f "$file"; then
+                    usage
+                    return 1
+                fi
+                ;;
+            -h|--help)
+                usage
+                exit
+                ;;
+            -r|--remove)
+                action=remove
+                ;;
+            --)
+                shift
+                break
+                ;;
+            *)
+                usage
+                return 1
+                ;;
+        esac
+        shift
+    done
+
+    if (( $# > 0 )); then
+
+        # Expand possibly comma-separated list of recipients into separate arguments.
+        OIFS=$IFS; IFS=",$IFS"; set -- $(echo "$@"); IFS=$OIFS
+        recipients=( "$@" )
+    fi
+}
+
+if test ."$0" = ."${BASH_SOURCE[0]}"; then
+    declare script=$($READLINK_CMD -e "$0")
+    declare script_name=${script##*/}
+
+    declare sops_file=''
+    declare sops_action=add
+    declare -a given_recipients=()
+
+    parse-command-line sops_file sops_action given_recipients "$@" || exit $?
+
+    declare -a age_recipients=()
+
+    if ! get-current-recipients age_recipients "$sops_file"; then
+        usage
+        exit 1
+    elif ! get-recipient-updates given_recipients; then
+        usage
+        exit 2
+    fi
+
+    case "$sops_action" in
+        add)
+            add-new-recipients age_recipients given_recipients
+            ;;
+        remove)
+            remove-existing-recipients age_recipients given_recipients
+            ;;
+    esac
+
+    re-encrypt-file age_recipients "$sops_file" || exit $?
+fi

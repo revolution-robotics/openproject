@@ -1,0 +1,66 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+#
+# @(#) is-valid-domain-name
+#
+# Copyright © 2022 Revolution Robotics, Inc.
+#
+require 'idnx'
+
+# Validates an International Domain Name
+class DomainNameValidator
+  DOMAIN_LEN_MAX = 253
+  LABEL_LEN_MAX = 63
+  DOMAIN_REGEX =
+    /\A(?:(?:[\p{L}\p{N}\p{M}](?:[\p{L}\p{N}\p{M}-]*[\p{L}\p{N}\p{M}])?\.)*
+           [\p{L}\p{N}\p{M}](?:[\p{L}\p{N}\p{M}-]*[\p{L}\p{N}\p{M}])?)\z/x
+
+  class << self
+    def fqdn_valid?(domain)
+      return false unless domain =~ DOMAIN_REGEX
+
+      puny = Idnx.to_punycode(domain)
+
+      puny.size <= DOMAIN_LEN_MAX \
+          && puny.split('.').all? { |label| label.size <= LABEL_LEN_MAX }
+    end
+  end
+end
+
+exit DomainNameValidator.fqdn_valid?(ARGV[0]) ? 0 : 1
+
+valid_fqdns = <<~'VALID'
+  example.com
+  mailserver1
+  s.example
+  Sörensen.example.com
+  example.com
+  παράδειγμα.δοκιμή
+  παράδειγμα.ελ
+  с-балалайкой.рф
+  пошта.укр
+  пример.рф
+  屋企.香港
+  例子.广告
+  黒川.日本
+  ツッ.com
+  メール.グーグル
+  डाटा.भारत
+  डाटामेल.भारत
+  xn--c2bd4bq1db8d.xn--h2brj9c
+
+VALID
+
+invalid_fqdns = <<~'INVALID'
+  [123.123.123.123]
+  [IPv6:2001:0db8:85a3:0000:0000:8a2e:0370:7334]
+INVALID
+
+valid_fqdns.split(/\n/).each do |fqdn|
+  puts fqdn unless fqdn.empty? || DomainNameValidator.fqdn_valid?(fqdn)
+end
+
+invalid_fqdns.split(/\n/).each do |fqdn|
+  puts fqdn if ! fqdn.empty? && DomainNameValidator.fqdn_valid?(fqdn)
+end

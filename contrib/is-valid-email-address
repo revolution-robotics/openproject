@@ -1,0 +1,112 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+#
+# @(#) is-valid-email-address
+#
+# Copyright © 2022 Revolution Robotics, Inc.
+#
+# This script tests the regular expression, EMAIL_REGEX, against both
+# valid and invalid email addressses. The regular expression does not
+# attempt to match IPv6 mail domains of the form:
+#     [IPv6:2001:0db8:85a3:0000:0000:8a2e:0370:7334]
+#
+class EmailValidator
+  LOCAL_LEN_MAX = 64
+  DOMAIN_LEN_MAX = 253
+  LABEL_LEN_MAX = 63
+  RFC_5322_VALID_PUNCT = Regexp.escape("!#$%&'*+/=?^_`{|}~-")
+  EMAIL_REGEX =
+    /\A(?:([#{RFC_5322_VALID_PUNCT}\p{L}\p{N}\p{M}\p{Pc}])+
+     (?:\.([#{RFC_5322_VALID_PUNCT}\p{L}\p{N}\p{M}\p{Pc}])+)*|
+     "(?:[\p{L}\p{N}\x01-\x08\x0b\x0c\x0e-\x21\x23-\x5b\x5d-\x7f]|
+       \\[\p{L}\p{N}\x01-\x09\x0b\x0c\x0e-\x7f])+")
+     [@\uff20]
+     (?:(?:[\p{L}\p{N}\p{M}](?:[\p{L}\p{N}\p{M}-]*[\p{L}\p{N}\p{M}])?\.)*
+           [\p{L}\p{N}\p{M}](?:[\p{L}\p{N}\p{M}-]*[\p{L}\p{N}\p{M}])?|
+        \[(?:(?:(2(5[0-5]|[0-4][0-9])|1[0-9][0-9]|[1-9]?[0-9]))\.){3}
+             (?:(2(5[0-5]|[0-4][0-9])|1[0-9][0-9]|[1-9]?[0-9])|
+        [\p{L}\p{N}\p{M}-]*[\p{L}\p{N}\p{M}]:
+      (?:[\p{L}\p{N}\p{M}\p{Pc}\x01-\x08\x0b\x0c\x0e-\x1f\x21-\x5a\x53-\x7f]|
+       \\[\p{L}\p{N}\p{M}\p{Pc}\x01-\x09\x0b\x0c\x0e-\x7f])+)\])\z/x
+
+  class << self
+    def address_valid?(email)
+      return false unless email =~ EMAIL_REGEX
+
+      local, domain = email.split(/[@\uff20]/)
+
+      local.size > LOCAL_LEN_MAX || domain.size > DOMAIN_LEN_MAX \
+      || domain.split('.').any? { |label| label.size > LABEL_LEN_MAX } \
+      ? false : true
+    end
+  end
+end
+
+exit EmailValidator.address_valid?(ARGV[0]) ? 0 : 1
+
+# valid_email_addresses = <<~'VALID'
+#   simple@example.com
+#   very.common@example.com
+#   disposable.style.email.with+symbol@example.com
+#   other.email-with-hyphen@example.com
+#   fully-qualified-domain@example.com
+#   user.name+tag+sorting@example.com
+#   x@example.com
+#   example-indeed@strange-example.com
+#   test/test@test.com
+#   user+mailbox/department=shipping@example.com
+#   !#$%&'*+-/=?^_`.{|}~@example.com
+#   "Fred\ Bloggs"@example.com
+#   "Joe.\\Blow"@example.com
+#   admin@mailserver1
+#   example@s.example
+#   " "@example.org
+#   "john..doe"@example.org
+#   mailhost!username@example.org
+#   "very.(),:;<>[]\".VERY.\"very@\\ \"very\".unusual"@strange.example.com
+#   "very.(),:;<>[].VERY.very@ very.unusual"@strange.example.com
+#   user%example.com@example.org
+#   user-@example.org
+#   postmaster@[123.123.123.123]
+#   postmaster@[IPv6:2001:0db8:85a3:0000:0000:8a2e:0370:7334]
+#   Dörte@Sörensen.example.com
+#   Pelé@example.com
+#   δοκιμή@παράδειγμα.δοκιμή
+#   χρήστης@παράδειγμα.ελ
+#   медведь@с-балалайкой.рф
+#   квіточка@пошта.укр
+#   коля@пример.рф
+#   我買@屋企.香港
+#   用户@例子.广告
+#   二ノ宮@黒川.日本
+#   support@ツッ.com
+#   武＠メール.グーグル
+#   अजय@डाटा.भारत
+#   संपर्क@डाटामेल.भारत
+
+# VALID
+
+# invalid_email_addresses = <<~'INVALID'
+#   ""
+#   ""@example.com
+#   @example.com
+#   abc@
+#   Abc.example.com
+#   A@b@c@example.com
+#   a"b(c)d,e:f;g<h>i[j\k]l@example.com
+#   just"not"right@example.com
+#   this is"not\allowed@example.com
+#   this\ still\"not\\allowed@example.com
+#   1234567890123456789012345678901234567890123456789012345678901234+x@example.com
+#   i_like_underscore@but_its_not_allowed_in_this_part.example.com
+#   QA[icon]CHOCOLATE[icon]@test.com
+# INVALID
+
+# valid_email_addresses.split(/\n/).each do |email|
+#   puts email unless email.empty? || EmailValidator.address_valid?(email)
+# end
+
+# invalid_email_addresses.split(/\n/).each do |email|
+#   puts email if !email.empty? && EmailValidator.address_valid?(email)
+# end

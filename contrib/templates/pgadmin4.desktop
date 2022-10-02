@@ -1,0 +1,10 @@
+[Desktop Entry]
+Encoding=UTF-8
+Name=pgAdmin 4
+Exec=/usr/bin/systemctl --user start pgadmin4.service
+Icon=/home/alm/.asdf/installs/python/3.10.6/lib/python3.10/site-packages/pgadmin4/pgadmin/static/img/logo-256.png
+Type=Application
+Categories=Application;Development;
+MimeType=text/html
+Comment=Management tools for PostgreSQL
+Keywords=database;db;sql;query;administration;development;

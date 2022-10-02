@@ -1,0 +1,350 @@
+#!/usr/bin/env bash
+#
+# @(#) create-app-db-role
+#
+# Copyright © 2022 Revolution Robotics, Inc.
+#
+# SYNOPSIS
+#
+#     create-app-db-role [APP-NAME [APP-OWNER [PROVISION-PATH [PROVISION-OWNNER]]]]
+#
+# DESCRIPTION
+#
+#     This script adds a PostgreSQL role for a given web app and owner
+#     of the app. It is assumed that the root of the app is in a
+#     directory of the same name as the app itself, and the app's
+#     parent directory is the home directory of the app's owner. For
+#     instance, app `oauth' owned by user ` puma' is expected to be
+#     rooted in `/home/puma/oauth'.
+#
+#     PROVISION-OWNER is the username of the server admin who
+#     provisioned this server, e.g., `revo'.
+
+#     PROVISION-PATH is the repository path relative to server admin's home directory
+#     from which the server was provisioned, e.g., `remote-server-setup'.
+#
+: ${AWK_CMD:='/usr/bin/gawk'}
+: ${BASH_CMD:='/bin/bash'}
+: ${CHMOD_CMD:='/usr/bin/chmod'}
+: ${CHOWN_CMD:='/usr/bin/chown'}
+: ${CUT_CMD:='/usr/bin/cut'}
+: ${GETENT_CMD:='/usr/bin/getent'}
+: ${GREP_CMD:='/usr/bin/grep'}
+: ${HOSTNAME_CMD:='/usr/bin/hostname'}
+: ${ID_CMD:='/usr/bin/id'}
+: ${LS_CMD:='/usr/bin/ls'}
+: ${PSQL_CMD:='/usr/bin/psql'}
+: ${READLINK_CMD:='/usr/bin/readlink'}
+: ${RM_CMD:='/bin/rm'}
+: ${SED_CMD:='/usr/bin/sed'}
+: ${SOPS_CMD:="${HOME}/.asdf/shims/sops"}
+: ${SUDO_CMD:='/usr/bin/sudo'}
+: ${TOUCH_CMD:='/usr/bin/touch'}
+
+run-once ()
+{
+    local func=$1
+    local -n _profile=$2
+
+    if test ! -f "${_profile[state-file]}" \
+            || ! $GREP_CMD -q "^${func}\$" "${_profile[state-file]}"; then
+        $func "${@:2}" || return $?
+        echo "$func" >>"${_profile[state-file]}"
+    fi
+}
+
+verify-input ()
+{
+    local prompt=$1
+
+    local reply=''
+
+    while [[ ! ."$reply" =~ \.([yY]|[nN]) ]]; do
+        read -N 1 -p "$prompt" reply
+        echo >&2
+    done
+
+    case $reply in
+        [yY])
+            return 0
+            ;;
+        [nN])
+            return 1
+            ;;
+    esac
+}
+
+get-app-name ()
+{
+    local app_name=''
+    local app_name_prompt="Enter app name: "
+
+    read -p "$app_name_prompt" app_name
+    while test ."$app_name" = .'' \
+            || ! verify-input  "App's name is: ${app_name} - Correct (y|n)? "; do
+        read -p "$app_name_prompt" app_name
+    done
+
+    echo "$app_name"
+}
+
+get-app-owner ()
+{
+    local -n settings=$1
+
+    local app_owner=''
+    local app_owner_prompt="Enter username of app ${settings[app-name]}'s owner: "
+
+    read -p "$app_owner_prompt" app_owner
+    while test ."$app_owner" = .'' \
+            || ! verify-input  "${settings[app-name]}'s owner is: ${app_owner} - Correct (y|n)? "; do
+        read -p "$app_owner_prompt" app_owner
+    done
+
+    echo "$app_owner"
+}
+
+get-provision-owner ()
+{
+    local -n settings=$1
+
+    local login_defs=''
+
+    case "${settings[release-id]}" in
+        almalinux|centos|fedora|rhel|rocky)
+            login_defs=/etc/login.defs
+            ;;
+        *suse*)
+            login_defs=/usr/etc/login.defs
+            ;;
+        *)
+            echo "${settings[release-id]}: Unsupported OS ID" >&2
+            return 1
+            ;;
+    esac
+
+    local admin_username=''
+    local default_admin_username=''
+    local uid_min=''
+
+    uid_min=$($AWK_CMD '/^UID_MIN/ { print $2 }' "$login_defs") || return $?
+    default_admin_username=$($ID_CMD -un "$uid_min") || return $?
+
+    local admin_username_prompt="Enter username of ${settings[fqdn]}'s administrator [$default_admin_username]: "
+
+    read -p "$admin_username_prompt" admin_username
+    if test ."$admin_username" = .''; then
+        admin_username=$default_admin_username
+    fi
+
+    while ! verify-input  "Administrator username is: ${admin_username} - Correct (y|n)? "; do
+        read -p "$admin_username_prompt" admin_username
+        if test ."$admin_username" = .''; then
+            admin_username=$default_admin_username
+        fi
+    done
+
+    echo "$admin_username"
+}
+
+get-provision-path ()
+{
+    local -n settings=$1
+
+    local provision_path=''
+    local default_provision_path=remote-server-setup
+    local provision_prompt="Enter provisioning path relative to
+${settings[provision-owner]}@${settings[fqdn]}'s home directory [${default_provision_path}]: "
+
+    read -p "$provision_prompt" provision_path
+    if test ."$provision_path" = .''; then
+        provision_path=$default_provision_path
+    fi
+
+    while ! verify-input  "Provision path is: ${provision_path} - Correct (y|n)? "; do
+        read -p "$provision_prompt" provision_path
+        if test ."$provision_path" = .''; then
+            provision_path=$default_provision_path
+        fi
+    done
+
+    echo "$provision_path"
+}
+
+initialize-profile ()
+{
+    local -n profile=$1
+
+    local domain=''
+    local fqdn=''
+    local hostname=''
+
+    domain=$($HOSTNAME_CMD --domain 2>/dev/null || echo "${HOSTNAME#*.}")
+    fqdn=$($HOSTNAME_CMD --fqdn 2>/dev/null || echo "$HOSTNAME")
+    hostname=$(echo "$HOSTNAME")
+
+    if test ."$fqdn" != .'' \
+            && [[ ! ."$fqdn" =~ ^\.[^.]+$ ]]; then
+        profile[fqdn]=$fqdn
+    elif [[ ."$hostname" =~ ^\.[^.]+$ ]] \
+             && test ."$domain" != .'' \
+             && test ."$hostname" != ."$domain"; then
+        profile[fqdn]=${hostname}.${domain}
+    else
+        profile[fqdn]=$hostname
+    fi
+
+    if test ."${profile[app-name]}" = .''; then
+        profile[app-name]=$(get-app-name) || return $?
+    fi
+
+    if test ."${profile[app-owner]}" = .''; then
+        profile[app-owner]=$(get-app-owner profile) || return $?
+    fi
+
+    local app_parent_dir=''
+
+    if ! app_parent_dir=$(
+            $GETENT_CMD passwd "${profile[app-owner]}" | $CUT_CMD -d: -f6
+         ) || test ! -d "$app_parent_dir"; then
+        echo "$script_name: ${profile[app-owner]}: Missing system account."
+        return 1
+    fi
+
+    if test ! -d "${app_parent_dir}/${profile[app-name]}"; then
+        echo "$script_name: ${app_parent_dir}/${profile[app-name]}: No such file or directory." >&2
+        return 1
+    fi
+
+    profile[app-parent-dir]=$app_parent_dir
+    profile[app-dir]=${app_parent_dir}/${profile[app-name]}
+
+    if test ."${profile[provision-owner]}" = .''; then
+        profile[provision-owner]=$(get-provision-owner profile) || return $?
+    fi
+
+    local provision_parent_dir=''
+
+    if ! provision_parent_dir=$(
+            $GETENT_CMD passwd "${profile[provision-owner]}" | $CUT_CMD -d: -f6
+         ) || test ! -d "$provision_parent_dir"; then
+        echo "$script_name: ${profile[provision-owner]}: Missing system account."
+        return 1
+    fi
+
+    local provision_path=''
+
+    if test ."${profile[provision-path]}" = .''; then
+        if provision_path=$(
+                $LS_CMD -d "${provision_parent_dir}"/remote-* 2>/dev/null |
+                    $SED_CMD -e '1q'
+                         ) && test -d "$provision_path"; then
+            profile[provision-path]=${provision_path##*/}
+        else
+            profile[provision-path]=$(get-provision-path profile) || return $?
+
+            if test ! -d "${provision_parent_dir}/${profile[provision-path]}"; then
+                echo "$script_name: ${provision_parent_dir}/${profile[provision-path]}: No such file or directory."
+                return 1
+            fi
+        fi
+    fi
+
+   profile[provision-dir]=${provision_parent_dir}/${profile[provision-path]}
+}
+
+add-postgresql-role ()
+{
+    local -n profile=$1
+    local pgpass=${profile[app-parent-dir]}/.pgpass
+    local psql_history=~postgres/.psql_history
+
+    echo "*** Creating PostgreSQL role." >&2
+    $TOUCH_CMD "$pgpass"
+    $CHMOD_CMD 0600 "$pgpass"
+    $CHOWN_CMD "${profile[app-owner]}:${profile[app-owner]}" "$pgpass"
+
+    trap '$RM_CMD -f "$pgpass" "$psql_history"; exit 1' 0 1 2 15 RETURN
+
+    $SOPS_CMD exec-env "${profile[provision-dir]}/config/secrets.sops.yml" \
+              'echo localhost:5432:postgres:postgres:$postgres_password' \
+              >"$pgpass" || return $?
+
+    # From https://stackoverflow.com/questions/8092086/create-postgresql-role-user-if-it-doesnt-exist/49858797#49858797
+    # pl/pgSQL version of: CREATE ROLE IF NOT EXISTS test
+    #     DO $$
+    #     BEGIN
+    #     CREATE ROLE test;
+    #     EXCEPTION WHEN duplicate_object THEN RAISE NOTICE '%, skipping', SQLERRM USING ERRCODE = SQLSTATE;
+    #     END
+    #     $$;
+
+    # Querying the database gets easier once Rails is set up. See, for
+    # example, ${profile[app-dir]}/lib/tasks/db_contains_admin.rake
+
+    local role_exists=false
+    local -i exec_status=0
+
+    pushd /tmp
+
+    role_exists=$(
+        $SUDO_CMD -i -u "${profile[app-owner]}" \
+                  sops exec-env "${profile[app-dir]}/config/database-secrets.sops.yml" \
+                  "$PSQL_CMD -tA -U postgres -c \
+                             \"SELECT CASE WHEN ( \
+                                       SELECT true FROM pg_roles WHERE rolname = '\${prod_auth_db_user}' \
+                               ) THEN 'true' ELSE 'false' END;\" >&2" 2>&1 >/dev/null
+               )
+    exec_status=$?
+
+    if (( exec_status != 0 )); then
+        popd
+        $RM_CMD -f "$pgpass" "$psql_history"
+
+        trap - 0 1 2 15 RETURN
+
+        return $exec_status
+    fi
+
+    if ! $role_exists; then
+        $SUDO_CMD -i -u "${profile[app-owner]}" \
+                  sops exec-env "${profile[app-dir]}/config/database-secrets.sops.yml" \
+                  "$PSQL_CMD -U postgres -c \
+                             \"CREATE ROLE \${prod_auth_db_user} WITH CREATEDB LOGIN PASSWORD '\${prod_auth_db_pass}';\""
+        exec_status=$?
+    fi
+
+    popd
+    $RM_CMD -f "$pgpass" "$psql_history"
+
+    trap - 0 1 2 15 RETURN
+
+    return $exec_status
+}
+
+if test ."$0" = ."${BASH_SOURCE[0]}"; then
+    declare script=$($READLINK_CMD -e "$0")
+    declare script_name=${script##*/}
+    declare script_dir=${script%/*}
+
+    declare default_state_file=${script_dir}/.deploy-state
+
+    source /etc/os-release
+
+    declare -A local_profile=(
+        [app-name]=$1
+        [app-owner]=$2
+        [provision-path]=$3
+        [provision-owner]=$4
+        [state-file]=${5:-"$default_state_file"}
+        [release-id]=$ID
+    )
+
+    if (( UID != 0 )); then
+        echo "${script_name}: This script must be run as user \`root'." >&2
+        exit 1
+    fi
+
+    initialize-profile local_profile || exit $?
+    run-once add-postgresql-role local_profile || exit $?
+fi

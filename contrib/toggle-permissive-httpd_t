@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+#
+# @(#) toggle-permissive-httpd_t
+#
+# Copyright © 2022 Revolution Robotics, Inc.
+#
+if sudo semanage permissive -l | grep -q httpd_t; then
+    echo "Disabling permissive httpd_t..." >&2
+    sudo semanage permissive -d httpd_t
+else
+    echo "Enabling permissive httpd_t..." >&2
+    sudo semanage permissive -a httpd_t
+fi

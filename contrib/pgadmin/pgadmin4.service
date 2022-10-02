@@ -1,0 +1,9 @@
+[Unit]
+Description=Web-based PostgreSQL management server.
+Documentation=https://www.pgadmin.org/docs
+
+[Service]
+ExecStart=/bin/bash -l -c "%h/.asdf/shims/pgadmin4"
+
+[Install]
+WantedBy=default.target

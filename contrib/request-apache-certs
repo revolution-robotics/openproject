@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# @(#) request-nginx-certs
+# @(#) request-apache-certs
 #
 # Copyright © 2022 Revolution Robotics, Inc.
 #
@@ -17,7 +17,7 @@ request-tls-certificates ()
             --non-interactive \
             --agree-tos \
             --email "$email_address" \
-            --nginx \
+            --apache \
             --keep-until-expiring \
             --preferred-challenges http \
             -d "$fqdn"
@@ -36,7 +36,7 @@ if test ."$0" = ."${BASH_SOURCE[0]}"; then
         exit 1
     fi
 
-    if ! "${script_dir}/is-valid-email-address" "$email_address" \
+    if ! "${script_dir}/is-valid-email" "$email_address" \
             || ! "${script_dir}/is-valid-domain-name" "$fqdn"; then
         echo "Usage: ${script_name} email-address domain-name" >&2
         exit 1

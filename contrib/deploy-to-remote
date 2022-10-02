@@ -1,0 +1,566 @@
+#!/usr/bin/env bash
+#
+# @(#) deploy-to-remote
+#
+# Copyright © 2022 Revolution Robotics, Inc.
+#
+: ${AWK_CMD:='/usr/bin/gawk'}
+: ${CP_CMD:='/usr/bin/cp'}
+: ${GETOPT_CMD:='/usr/bin/getopt'}
+: ${GIT_CMD:='/usr/bin/git'}
+: ${GREP_CMD:='/usr/bin/grep'}
+: ${MKTEMP_CMD:='/usr/bin/mktemp'}
+: ${READLINK_CMD:='/usr/bin/readlink'}
+: ${RM_CMD:='/bin/rm'}
+: ${SORT_CMD:='/usr/bin/sort'}
+: ${SSH_CMD:='/usr/bin/ssh'}
+: ${SSH_KEYSCAN_CMD:='/usr/bin/ssh-keyscan'}
+: ${TAR_CMD:='/usr/bin/tar'}
+
+usage ()
+{
+    local -n settings=$1
+
+cat >&2 <<EOF
+Usage: $script_name OPTIONS
+where OPTIONS are:
+    -a | --admin=REMOTE-ADMIN
+        Username of administrator on remote server.
+    -n | --app-name=APP-NAME
+        Name to deploy app as (default: ${settings[app-name]}).
+    -o | --app-owner=APP-OWNER
+        Username of app owner (default: ${settings[app-owner]}).
+    -p | --provisioning-path=REMOTE-PATH
+        Provising path relative to REMOTE-ADMIN home directory (default: ${settings[provisioning-path]}).
+    -s | --server=REMOTE-SERVER
+        Name of remote server on which to deploy app.
+
+REMOTE-SERVER is assumed to have been provisioned by REMOTE-ADMIN via
+\`setup-remote-server' (q.v.).
+EOF
+}
+
+run-once ()
+{
+    local func=$1
+    local -n _profile=$2
+
+    if test ! -f "${_profile[state-file]}" \
+            || ! $GREP_CMD -q "^${func}\$" "${_profile[state-file]}"; then
+        $func _profile "${@:2}" || return $?
+        echo "$func" >>"${_profile[state-file]}"
+    fi
+}
+
+verify-input ()
+{
+    local prompt=$1
+
+    local reply=''
+
+    while [[ ! ."$reply" =~ \.([yY]|[nN]) ]]; do
+        read -N 1 -p "$prompt" reply
+        echo >&2
+    done
+
+    case $reply in
+        [yY])
+            return 0
+            ;;
+        [nN])
+            return 1
+            ;;
+    esac
+}
+
+get-server-name ()
+{
+    local server_name=''
+    local name_prompt="Enter name of server to deploy to: "
+
+    read -p "$name_prompt" server_name
+
+    while test ."$server_name" = .'' \
+            || ! verify-input  "Server name is: ${server_name} - Correct (y|n)? "; do
+        read -p "$name_prompt" server_name
+    done
+
+    echo "$server_name"
+}
+
+get-admin-name ()
+{
+    local -n settings=$1
+
+    local admin_name=''
+    local name_prompt="Enter username of ${settings[remote-fqdn]}'s administrator [${settings[remote-admin]}]: "
+
+    read -p "$name_prompt" admin_name
+    if test ."$admin_name" = .''; then
+        admin_name=${settings[remote-admin]}
+    fi
+
+    while test ."$admin_name" = .'' \
+            || ! verify-input  "Administrator username is: ${admin_name}@${settings[remote-fqdn]} - Correct (y|n)? "; do
+        read -p "$name_prompt" admin_name
+    done
+
+    echo "$admin_name"
+}
+
+get-app-name ()
+{
+    local -n settings=$1
+
+    local app_name=''
+    local name_prompt="Enter name to deploy app as on ${settings[remote-fqdn]} [${settings[app-name]}]: "
+
+    read -p "$name_prompt" app_name
+    if test ."$app_name" = .''; then
+        app_name=${settings[app-name]}
+    fi
+
+    while ! verify-input  "App name is: ${app_name} - Correct (y|n)? "; do
+        read -p "$name_prompt" app_name
+        if test ."$app_name" = .''; then
+            app_name=${settings[app-name]}
+        fi
+    done
+
+    echo "$app_name"
+}
+
+get-app-owner ()
+{
+    local -n settings=$1
+
+    local app_owner=''
+    local owner_prompt="Enter ${settings[app-name]}'s owner on ${settings[remote-fqdn]} [${settings[app-owner]}]: "
+
+    read -p "$owner_prompt" app_owner
+    if test ."$app_owner" = .''; then
+        app_owner=${settings[app-owner]}
+    fi
+
+    while ! verify-input  "App owner is: ${app_owner}@${settings[remote-fqdn]} - Correct (y|n)? "; do
+        read -p "$owner_prompt" app_owner
+        if test ."$app_owner" = .''; then
+            app_owner=${settings[app-owner]}
+        fi
+    done
+
+    echo "$app_owner"
+}
+
+get-provisioning-path ()
+{
+    local -n settings=$1
+
+    local provision_path=''
+    local provision_prompt="Enter server-provisioning repository path relative to
+${settings[remote-admin]}@${settings[remote-fqdn]}'s home directory [${settings[provisioning-path]}]: "
+
+    read -p "$provision_prompt" provision_path
+    if test ."$provision_path" = .''; then
+        provision_path=${settings[provisioning-path]}
+    fi
+
+    while ! verify-input  "Provisioning path is: ${provision_path} - Correct (y|n)? "; do
+        read -p "$provision_prompt" provision_path
+        if test ."$provision_path" = .''; then
+            provision_path=${settings[provisioning-path]}
+        fi
+    done
+
+    echo "$provision_path"
+}
+
+initialize-profile ()
+{
+    local -n profile=$1
+
+    local hostip=''
+    local username=''
+
+    if test ."${profile[remote-server]}" = .''; then
+        profile[remote-server]=$(get-server-name) || return $?
+    fi
+
+    if [[ ."${profile[remote-server]}" =~ \.([^@]+@)?([^:]+)(:[^:]+)? ]]; then
+        local host=${BASH_REMATCH[2]}
+
+        hostip=$(
+            $SSH_CMD -G "$host" |
+                $AWK_CMD '/^hostname/ { printf $2 }'
+              ) || return $?
+        username=$(
+            $SSH_CMD -G "${profile[remote-server]}" |
+                $AWK_CMD '$1 == "user" { printf $2 }'
+                ) || return $?
+
+        profile[remote-sship]=$hostip
+
+        if test ."${profile[remote-admin]}" = .''; then
+            profile[remote-admin]=$username
+        fi
+    else
+        username=${profile[remote-server]%@*}
+
+        if test ."${profile[remote-admin]}" = .''; then
+            profile[remote-admin]=$username
+        fi
+
+        if $SSH_CMD "${profile[remote-admin]}@${profile[remote-server]##*@}" true 2>/dev/null; then
+            profile[remote-sship]=${profile[remote-server]##*@}
+        fi
+    fi
+
+    if test ."${profile[remote-sship]}" = .''; then
+        echo "${script_name}: Missing required argument - REMOTE-SERVER" >&2
+        usage profile
+        return 1
+    fi
+
+    local domain=''
+    local fqdn=''
+    local hostname=''
+
+    domain=$(
+        $SSH_CMD "${profile[remote-admin]}@${profile[remote-sship]}" \
+                 'hostname --domain 2>/dev/null || echo "${HOSTNAME#*.}"'
+          ) || return $?
+    fqdn=$(
+        $SSH_CMD "${profile[remote-admin]}@${profile[remote-sship]}" \
+                 'hostname --fqdn 2>/dev/null || echo "$HOSTNAME"'
+        ) || return $?
+    hostname=$(
+        $SSH_CMD "${profile[remote-admin]}@${profile[remote-sship]}" 'echo $HOSTNAME'
+            ) || return $?
+
+    if [[ ! ."$fqdn" =~ ^\.[^.]+$ ]]; then
+        profile[remote-fqdn]=$fqdn
+    elif [[ ."$hostname" =~ ^\.[^.]+$ ]] \
+             && test ."$domain" != .'' \
+             && test ."$hostname" != ."$domain"; then
+        profile[remote-fqdn]=${hostname}.${domain}
+    elif [[ ! ."$hostname" =~ ^\.[^.]+$ ]]; then
+        profile[remote-fqdn]=$hostname
+    else
+        profile[remote-fqdn]=${profile[remote-sship]}
+    fi
+
+    if ! ${profile[remote-admin-set]}; then
+        profile[remote-admin]=$(get-admin-name profile) || return $?
+    fi
+
+    if test ."${profile[remote-admin]}" = .''; then
+        echo "${script_name}: Missing required argument - REMOTE-ADMIN" >&2
+        usage profile
+        return 1
+    fi
+
+    if ! ${profile[app-name-set]}; then
+        profile[app-name]=$(get-app-name profile) || return $?
+    fi
+
+    if test ."${profile[remote-admin]}" = .''; then
+        echo "${script_name}: Missing required argument - REMOTE-ADMIN" >&2
+        usage profile
+        return 1
+    fi
+
+    if ! ${profile[app-owner-set]}; then
+        profile[app-owner]=$(get-app-owner profile) || return $?
+    fi
+
+    profile[app-unit]=${profile[app-owner]}@${profile[app-name]}.service
+
+    local app_parent_dir=''
+    local -i status=0
+
+    app_parent_dir=$(
+        $SSH_CMD "${profile[remote-admin]}@${profile[remote-sship]}" \
+                 "getent passwd ${profile[app-owner]} | cut -d: -f6"
+                  )
+    status=$?
+
+    if (( status != 0 )) \
+           || ! $SSH_CMD "${profile[remote-admin]}@${profile[remote-sship]}" \
+                "test -d '${app_parent_dir}'"; then
+        echo "$script_name: ${profile[app-owner]}: Missing remote server account."
+        return 1
+    fi
+
+    profile[app-dir]=${app_parent_dir}/${profile[app-name]}
+
+    if ! ${profile[provisioning-path-set]}; then
+        profile[provisioning-path]=$(get-provisioning-path profile) || return $?
+    fi
+
+    if ! $SSH_CMD "${profile[remote-admin]}@${profile[remote-sship]}" \
+         "test -d '${profile[provisioning-path]}'"; then
+        echo "$script_name: ~${profile[remote-admin]}/${profile[provisioning-path]}: No such file or directory."
+        return 1
+    fi
+}
+
+cache-remote-keys ()
+{
+    local -n profile=$1
+
+    local known_hosts=''
+    local known_hosts_dir=''
+    local tmpfile=''
+
+    known_hosts=$(
+        $SSH_CMD -G "$HOSTNAME" |
+            $AWK_CMD '/^userknownhostsfile/ { print $2 }'
+               ) || return $?
+    known_hosts_dir=${known_hosts%/*}
+    tmpfile=$($MKTEMP_CMD "${known_hosts_dir}/${FUNCNAME[0]}.XXXXXXX") || return $?
+
+    trap '$RM_CMD -f "$tmpfile"; exit' 0 1 2 15 RETURN
+
+    if test -f "$known_hosts"; then
+        $CP_CMD "$known_hosts" "$tmpfile"
+    fi
+
+    if ! $SSH_KEYSCAN_CMD -H  "${profile[remote-sship]}" 2>/dev/null >>"$tmpfile"; then
+        echo "${script_name}: ${profile[remote-sship]}: Host is unreachable" >&2
+        return 1
+    fi
+
+    $SORT_CMD -u < "$tmpfile" >"$known_hosts"
+    $RM_CMD -f "$tmpfile"
+
+    trap - 0 1 2 15 RETURN
+}
+
+stop-remote-service ()
+{
+    local -n settings=$1
+
+    $SSH_CMD "${settings[remote-admin]}@${settings[remote-sship]}" \
+             "! systemctl is-active '${settings[app-unit]}' || sudo systemctl stop '${settings[app-unit]}'" \
+        || return $?
+}
+
+upload-to-remote ()
+{
+    local -n settings=$1
+
+    echo "**** Uploading app ${settings[app-name]} to ${settings[app-owner]}@${settings[remote-fqdn]}." >&2
+    $GIT_CMD -C "${settings[toplevel-dir]}" archive --format tar --prefix "${settings[app-name]}/" HEAD |
+        $SSH_CMD "${settings[remote-admin]}@${settings[remote-sship]}" \
+            "sudo -i -u '${settings[app-owner]}' tar --overwrite -xf -" \
+            || return $?
+}
+
+authorize-secrets ()
+{
+    local -n settings=$1
+
+    # NB: $secrets_file must be relative to $toplevel_dir.
+    local secrets_file=config/database-secrets.sops.yml
+    local remote_recipient=''
+
+    : ${UPDATE_AGE_RECIPIENTS:="${settings[toplevel-dir]}/contrib/bin/update-age-recipients"}
+    : ${GET_REMOTE_RECIPIENT:="${settings[toplevel-dir]}/contrib/bin/get-remote-recipient"}
+
+    echo "**** Authorizing and uploading secrets." >&2
+    remote_recipient=$(
+        $GET_REMOTE_RECIPIENT --user="${settings[app-owner]}" \
+                              "${settings[remote-admin]}@${settings[remote-sship]}"
+                    ) || return $?
+    $UPDATE_AGE_RECIPIENTS -C "${settings[toplevel-dir]}" --add \
+                           --file="${settings[toplevel-dir]}/${secrets_file}" \
+                           "$remote_recipient" || return $?
+
+    $TAR_CMD -C "${settings[toplevel-dir]}" -cf - "$secrets_file" |
+        $SSH_CMD "${settings[remote-admin]}@${settings[remote-sship]}" \
+            sudo -i -u "${settings[app-owner]}" tar -C "${settings[app-name]}" --overwrite -xf - \
+            || return $?
+}
+
+create-db-role ()
+{
+    local  -n settings=$1
+
+    echo "**** Creating database role for ${profile[app-name]} on ${profile[remote-sship]}." >&2
+    $SSH_CMD -t "${settings[remote-admin]}@${settings[remote-sship]}" \
+         sudo -i "${settings[app-dir]}/contrib/create-app-db-role" \
+             "${settings[app-name]}" \
+             "${settings[app-owner]}" \
+             "${settings[provisioning-path]}" \
+             "${settings[remote-admin]}" || return $?
+}
+
+initialize-web-infrastructure ()
+{
+    local -n settings=$1
+
+    echo "**** Initializing web infrastructure for ${profile[app-name]} on ${profile[remote-sship]}." >&2
+    $SSH_CMD -t "${settings[remote-admin]}@${settings[remote-sship]}" \
+         sudo -i "${settings[app-dir]}/contrib/initialize-web-infrastructure" \
+             "${settings[app-name]}" \
+             "${settings[app-owner]}" || return $?
+}
+
+initialize-system-infrastructure ()
+{
+    local -n settings=$1
+
+    echo "**** Initializing systemd infrastructure for ${profile[app-name]} on ${profile[remote-sship]}." >&2
+    $SSH_CMD -t "${settings[remote-admin]}@${settings[remote-sship]}" \
+         sudo -i "${settings[app-dir]}/contrib/initialize-system-infrastructure" \
+             "${settings[app-name]}" \
+             "${settings[app-owner]}" || return $?
+}
+
+deploy-app ()
+{
+    local -n profile=$1
+
+    local remote_state_file=${profile[app-dir]}/contrib/${profile[state-file]}
+
+    if test -f "${profile[state-file]}" \
+            || $SSH_CMD "${profile[remote-admin]}@${profile[remote-sship]}" \
+                        "sudo test -f '$remote_state_file'" \
+                && ! verify-input "Resume interrupted system install (y|n)? "; then
+        $RM_CMD -f "${profile[state-file]}"
+        $SSH_CMD "${profile[remote-admin]}@${profile[remote-sship]}" \
+                 "sudo rm -rf '${profile[app-dir]}'"
+    fi
+
+    run-once stop-remote-service profile || exit $?
+    run-once upload-to-remote profile || exit $?
+    run-once authorize-secrets profile || exit $?
+    run-once create-db-role profile || exit $?
+    run-once initialize-web-infrastructure profile || exit $?
+    run-once initialize-system-infrastructure profile || exit $?
+
+    $RM_CMD -f "${profile[state-file]}"
+    $SSH_CMD "${profile[remote-admin]}@${profile[remote-sship]}" \
+             "sudo rm -f '$remote_state_file'"
+}
+
+parse-command-line ()
+{
+    local -n profile=$1
+    shift
+
+    local -r shortopts=a:hn:o:p:s:
+    local -r longopts=admin:,help,app-name:,app-owner:,provisioning-path:,server:
+    local args
+
+    args=$(
+        $GETOPT_CMD --shell bash --options "$shortopts"  \
+                --longoptions "$longopts" --name "$script_name" -- "$@"
+        ) || return $?
+
+    eval set -- "$args"
+
+    while true; do
+        case "$1" in
+            -a|--admin)
+                shift
+
+                profile[remote-admin]=$1
+                profile[remote-admin-set]=true
+                ;;
+            -h|--help)
+                usage profile
+                exit
+                ;;
+            -n|--app-name)
+                shift
+
+                profile[app-name]=$1
+                profile[app-name-set]=true
+                ;;
+            -o|--app-owner)
+                shift
+
+                profile[app-owner]=$1
+                profile[app-owner-set]=true
+                ;;
+            -p|--provisioning-path)
+                shift
+
+                profile[provisioning-path]=$1
+                profile[provisioning-path-set]=true
+                ;;
+            -s|--server)
+                shift
+
+                profile[remote-server]=$1
+                ;;
+            --)
+                shift
+                break
+                ;;
+            *)
+                usage profile
+                return 1
+                ;;
+        esac
+        shift
+    done
+}
+
+if test ."$0" = ."${BASH_SOURCE[0]}"; then
+    declare script=$($READLINK_CMD -e "$0")
+    declare script_name=${script##*/}
+    declare script_dir=${script%/*}
+
+    declare toplevel_dir=''
+
+    if ! toplevel_dir=$($GIT_CMD -C "$script_dir" rev-parse --show-toplevel); then
+        echo "$script_name: This script must be run from an app's Git repository." >&2
+        exit 1
+    fi
+
+    declare default_app_name=${toplevel_dir##*/}
+    declare default_provision_path=remote-server-setup
+    declare default_app_owner=puma
+    declare default_state_file=${script_dir}/.deploy-state
+
+    declare -A remote_profile=(
+        [toplevel-dir]=$toplevel_dir
+        [remote-admin-set]=false
+        [provisioning-path]=$default_provision_path
+        [provisioning-path-set]=false
+        [app-name]=$default_app_name
+        [app-name-set]=false
+        [app-owner]=$default_app_owner
+        [app-owner-set]=false
+        [state-file]=$default_state_file
+    )
+
+    parse-command-line remote_profile "$@" || exit $?
+
+    echo "***** Getting profile for remote server." >&2
+    initialize-profile remote_profile || exit $?
+
+    echo "***** Caching ${remote_profile[remote-sship]}'s SSH_CMD public keys." >&2
+    cache-remote-keys remote_profile || exit $?
+
+    echo "***** Deploying app ${remote_profile[app-name]}." >&2
+    deploy-app remote_profile || exit $?
+
+    declare nginx_vhost_conf=/etc/nginx/default.d/${remote_profile[app-name]}.conf
+
+    cat >&2 <<EOF
+***** Deployment complete.
+***** Review nginx virtual host configuration at:
+*****     ${nginx_vhost_conf}
+***** and run the script:
+*****     ${script_dir}/request-nginx-certs
+***** as needed.
+EOF
+
+    if verify-input "Restart server ${remote_profile[remote-sship]} now (y|n)? "; then
+        $SSH_CMD "${remote_profile[remote-admin]}@${remote_profile[remote-sship]}" \
+             "sudo shutdown -r now"
+    fi
+fi

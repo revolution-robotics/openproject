@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+#
+# NB:  Migrations must be updated as follows:
+#      1) create_table :table_name, id: :uuid do |t|
+#      2) add_foreign_key :certificates, :systems, on_delete: :cascade
+#      2) add_foreign_key :connections, :systems, column: :server_id, on_delete: :cascade
+#      4) t.references :foreign_key, type: :uuid, null: false, foregin_key: { to_table: :table_name }
+#      5) t.string :protocols, array: true
+#
+bin/rails g scaffold System hostname:string mac_addr:macaddr role:string uname:string{2048} cmdline:string{2048} ip_address:inet --database remote_monitor
+bin/rails g scaffold Certificate system:references fingerprint:string not_after:datetime --database remote_monitor
+bin/rails g model Key key:string reference_count:integer --database remote_monitor
+bin/rails g model Connection client:references server:references client_key:references server_key:references protocols:string not_after:datetime --database remote_monitor
+bin/rails g model Tunnel protocol:string proxy_port:integer destination_port:integer --database remote_monitor
+bin/rails g migration CreateJoinTableConnectionTunnel connection tunnel --database remote_monitor

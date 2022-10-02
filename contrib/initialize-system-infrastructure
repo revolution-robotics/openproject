@@ -1,0 +1,275 @@
+#!/usr/bin/env bash
+#
+# @(#) initialize-system-infrastructure
+#
+# Copyright © 2022 Revolution Robotics, Inc.
+#
+# SYNOPSIS
+#
+#     initialize-system-infrastructure [APP-NAME [APP-OWNER]]
+#
+: ${CHECKMODULE_CMD:='/usr/bin/checkmodule'}
+: ${CUT_CMD:='/usr/bin/cut'}
+: ${DNF_CMD:='/usr/bin/dnf'}
+: ${FIREWALL_CMD:='/usr/bin/firewall-cmd'}
+: ${GETENT_CMD:='/usr/bin/getent'}
+: ${GREP_CMD:='/usr/bin/grep'}
+: ${HOSTNAME_CMD:='/usr/bin/hostname'}
+: ${READLINK_CMD:='/usr/bin/readlink'}
+: ${SEMODULE_PACKAGE_CMD:='/usr/bin/semodule_package'}
+: ${SEMODULE_CMD:='/usr/sbin/semodule'}
+: ${SETENFORCE_CMD:='/usr/sbin/setenforce'}
+: ${SOPS_CMD:="${HOME}/.asdf/shims/sops"}
+: ${SUDO_CMD:='/usr/bin/sudo'}
+: ${SYSTEMCTL_CMD:='/usr/bin/systemctl'}
+: ${TAR_CMD:='/usr/bin/tar'}
+
+run-once ()
+{
+    local func=$1
+    local -n _profile=$2
+
+    if test ! -f "${_profile[state-file]}" \
+            || ! $GREP_CMD -q "^${func}\$" "${_profile[state-file]}"; then
+        $func "${@:2}" || return $?
+        echo "$func" >>"${_profile[state-file]}"
+    fi
+}
+
+verify-input ()
+{
+    local prompt=$1
+
+    local reply=''
+
+    while [[ ! ."$reply" =~ \.([yY]|[nN]) ]]; do
+        read -N 1 -p "$prompt" reply
+        echo >&2
+    done
+
+    case $reply in
+        [yY])
+            return 0
+            ;;
+        [nN])
+            return 1
+            ;;
+    esac
+}
+
+get-app-name ()
+{
+    local app_name=''
+    local app_name_prompt="Enter app name: "
+
+    read -p "$app_name_prompt" app_name
+    while test ."$app_name" = .'' \
+            || ! verify-input  "App's name is: ${app_name} - Correct (y|n)? "; do
+        read -p "$app_name_prompt" app_name
+    done
+
+    echo "$app_name"
+}
+
+get-app-owner ()
+{
+    local -n settings=$1
+
+    local app_owner=''
+    local app_owner_prompt="Enter username of app ${settings[app-name]}'s owner: "
+
+    read -p "$app_owner_prompt" app_owner
+    while test ."$app_owner" = .'' \
+            || ! verify-input  "${settings[app-name]}'s owner is: ${app_owner} - Correct (y|n)? "; do
+        read -p "$app_owner_prompt" app_owner
+    done
+
+    echo "$app_owner"
+}
+
+initialize-profile ()
+{
+    local -n profile=$1
+
+    local domain=''
+    local fqdn=''
+    local hostname=''
+
+    domain=$($HOSTNAME_CMD --domain 2>/dev/null || echo "${HOSTNAME#*.}")
+    fqdn=$($HOSTNAME_CMD --fqdn 2>/dev/null || echo "$HOSTNAME")
+    hostname=$(echo "$HOSTNAME")
+
+    if [[ ! ."$fqdn" =~ ^\.[^.]+$ ]]; then
+        profile[fqdn]=$fqdn
+    elif [[ ."$hostname" =~ ^\.[^.]+$ ]] \
+             && test ."$domain" != .'' \
+             && test ."$hostname" != ."$domain"; then
+        profile[fqdn]=${hostname}.${domain}
+    else
+        profile[fqdn]=$hostname
+    fi
+
+    if test ."${profile[app-name]}" = .''; then
+        profile[app-name]=$(get-app-name) || return $?
+    fi
+
+    if test ."${profile[app-owner]}" = .''; then
+        profile[app-owner]=$(get-app-owner profile) || return $?
+    fi
+
+    local app_parent_dir=''
+
+    if ! app_parent_dir=$(
+            $GETENT_CMD passwd "${profile[app-owner]}" | $CUT_CMD -d: -f6
+         ) || test ! -d "$app_parent_dir"; then
+        echo "$script_name: ${profile[app-owner]}: Missing system account."
+        return 1
+    fi
+
+    if test ! -d "${app_parent_dir}/${profile[app-name]}"; then
+        echo "$script_name: ${app_parent_dir}/${profile[app-name]}: No such file or directory." >&2
+        return 1
+    fi
+
+    profile[app-dir]=${app_parent_dir}/${profile[app-name]}
+}
+
+configure-firewall ()
+{
+    echo "*** Configuring firewall." >&2
+    $FIREWALL_CMD --permanent --add-service=http --add-service=https 2>/dev/null || return $?
+}
+
+enforce-security ()
+{
+    local -n profile=$1
+
+    case "${profile[release-id]}" in
+        almalinux|centos|fedora|rhel|rocky)
+            $SETENFORCE_CMD Enforcing || return $?
+            ;;
+        *suse*)
+            # XXX: Apparmor
+            ;;
+        *)
+            echo "$ID: Unsupported OS ID" >&2
+            exit 1
+            ;;
+    esac
+}
+
+install-nginx ()
+{
+    local -n profile=$1
+
+    case "${profile[release-id]}" in
+        almalinux|centos|fedora|rhel|rocky)
+            $DNF_CMD -y install nginx || return $?
+            ;;
+        *suse*)
+            $ZYPPER --non-interactive install nginx || return $?
+            ;;
+        *)
+            echo "$ID: Unsupported OS ID" >&2
+            exit 1
+            ;;
+    esac
+}
+
+install-system-files ()
+{
+    local -n profile=$1
+
+    echo "*** Installing systemd configuration." >&2
+    $TAR_CMD -C "${profile[app-dir]}/contrib" -cf - etc usr |
+        $TAR_CMD -C / --no-same-owner --overwrite -xf -
+}
+
+install-nginx-vhost ()
+{
+    local -n profile=$1
+
+    local nginx_vhost_conf=/etc/nginx/default.d/${profile[app-name]}.conf
+    local certificate=$($READLINK_CMD -e /etc/letsencrypt/live/${profile[fqdn]}/fullchain.pem || true)
+
+    if test -f "$certificate"; then
+
+        # Enable SSL if LetsEncrypt certificate exists.
+        $SED -e "s/@APP-NAME@/${profile[app-name]}/g" \
+             -e "s/@SERVER-FQDN@/${profile[fqdn]}/g" \
+             -e '/# listen.*ssl /,/# ssl_dhparam /s/# //' \
+             "${profile[app-dir]}/contrib/templates/nginx-vhost.conf" \
+             >"$nginx_vhost_conf"
+    else
+        $SED -e "s/@APP-NAME@/${profile[app-name]}/g" \
+             -e "s/@SERVER-FQDN@/${profile[fqdn]}/g" \
+             "${profile[app-dir]}/contrib/templates/nginx-vhost.conf" \
+             >"$nginx_vhost_conf"
+    fi
+}
+
+install-nginx-module ()
+{
+    local -n profile=$1
+
+    local module_name=${profile[app-name]}-nginx
+    local module_path=${script_dir}/${module_name}
+
+    case "${profile[release-id]}" in
+        almalinux|centos|fedora|rhel|rocky)
+            echo "*** Installing SELinux module ${script_dir##*/}/${module_name}" >&2
+            $SED -e "s/@MODULE-NAME@/${module_name}/" \
+                 "${script_dir}/templates/nginx.te" >"${module_path}.te"
+            $CHECKMODULE_CMD -o "${module_path}.mod" -m "${module_path}.te" || return $?
+            $SEMODULE_PACKAGE_CMD -o "${module_path}.pp" -m "${module_path}.mod" || return $?
+            $SEMODULE_CMD -i "${module_path}.pp" || return $?
+            ;;
+        *suse*)
+            # XXX: Apparmor
+            ;;
+        *)
+            echo "$ID: Unsupported OS ID" >&2
+            exit 1
+            ;;
+    esac
+}
+
+enable-app ()
+{
+    local -n profile=$1
+
+    echo "*** Enabling web app ${profile[app-name]}." >&2
+    $SYSTEMCTL_CMD enable "puma@${profile[app-name]}" || return $?
+    $SYSTEMCTL_CMD enable nginx || return $?
+}
+
+if test ."$0" = ."${BASH_SOURCE[0]}"; then
+    declare script=$($READLINK_CMD -e "$0")
+    declare script_name=${script##*/}
+    declare script_dir=${script%/*}
+
+    declare default_state_file=${script_dir}/.deploy-state
+
+    source /etc/os-release
+
+    declare -A local_profile=(
+        [app-name]=$1
+        [app-owner]=$2
+        [state-file]=${3:-"$default_state_file"}
+        [release-id]=$ID
+    )
+
+    if (( UID != 0 )); then
+        echo "${script_name}: This script must be run as user \`root'." >&2
+        exit 1
+    fi
+
+    initialize-profile local_profile || exit $?
+    run-once configure-firewall local_profile || exit $?
+    enforce-security local_profile
+    run-once install-nginx local_profile || exit $?
+    install-system-files local_profile || exit $?
+    install-nginx-vhost local_profile || exit $?
+    run-once install-nginx-module local_profile || exit $?
+    run-once enable-app local_profile || exit $?
+fi

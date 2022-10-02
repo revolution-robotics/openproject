@@ -1,0 +1,156 @@
+#!/usr/bin/env bash
+#
+# @(#) get-remote-recipient
+#
+# Copyright © 2022 Revolution Robotics, Inc.
+#
+# This script returns the age public key of a given REMOTE-USER on
+# REMOTE-SERVER. If REMOTE-USER is not specified, then it defaults to
+# REMOTE-LOGIN. Otherwise it's assumed that user REMOTE-LOGIN can run
+# `sudo -u REMOTE-USER`.
+#
+: ${AWK_CMD:='/usr/bin/gawk'}
+: ${CP_CMD:='/bin/cp'}
+: ${GETOPT_CMD:='/usr/bin/getopt'}
+: ${MKTEMP_CMD:='/usr/bin/mktemp'}
+: ${READLINK_CMD:='/usr/bin/readlink'}
+: ${RM_CMD:='/bin/rm'}
+: ${SSH_CMD:='/usr/bin/ssh'}
+: ${SSH_KEYSCAN_CMD:='/usr/bin/ssh-keyscan'}
+: ${SORT_CMD:='/usr/bin/sort'}
+: ${TR_CMD:='/usr/bin/tr'}
+
+usage ()
+{
+    echo "Usage: ${script_name} [-u | --user REMOTE-USER] [REMOTE-LOGIN@]REMOTE-SERVER" >&2
+}
+
+# sship: Return Hostname/IP address of  ~/.ssh/config host.
+sship ()
+{
+    local host=$1
+
+    if [[ ."$host" =~ \.([^@]+@)?([^:]+)(:[^:]+)? ]]; then
+        local user_at=${BASH_REMATCH[1]}
+        local host=${BASH_REMATCH[2]}
+        local colon_path=${BASH_REMATCH[3]}
+        local hostname=$(
+            $SSH_CMD -G "$host" |
+                $AWK_CMD '/^hostname/ { printf $2 }'
+              )
+
+        echo "${user_at}${hostname}${colon_path}"
+    fi
+}
+
+# cache-remote-keys: Scan remote server for SSH public keys.
+cache-remote-keys ()
+{
+    local remote=$1
+
+    local known_hosts=${HOME}/.ssh/known_hosts
+    local tmpfile=$($MKTEMP_CMD "${HOME}/.ssh/${FUNCNAME[0]}.XXXXXXX")
+
+    trap '$RM_CMD -f "$tmpfile"; exit' 0 1 2 15 RETURN
+
+    if test -f "$known_hosts"; then
+        $CP_CMD "$known_hosts" "$tmpfile"
+    fi
+
+    $SSH_KEYSCAN_CMD -H "${remote##*@}" 2>/dev/null >>"$tmpfile" || return $?
+    $SORT_CMD -u < "$tmpfile" >"$known_hosts"
+
+    $RM_CMD -f "$tmpfile"
+
+    trap - 0 1 2 15 RETURN
+}
+
+# get-remote-recipient: Return remote age recipient ID.
+get-remote-age-recipient ()
+{
+    local remote_server=$1
+    local remote_user=$2
+
+    local age_recipient=''
+    local remote_prompt=''
+
+    remote_prompt=$(
+        $SSH_CMD "$remote_server" \
+                 sudo -i -u "${remote_user:-'$USER'}" true 2>/dev/null
+                 ) || return $?
+    age_recipient=$(
+        $SSH_CMD "$remote_server" \
+                 sudo -i -u "${remote_user:-'$USER'}" age-keygen -y \
+                 '\$SOPS_AGE_KEY_FILE' 2>/dev/null
+                 ) || return $?
+    $TR_CMD -d '\r' <<<${age_recipient#"$remote_prompt"}
+}
+
+parse-command-line ()
+{
+    local -n server=$1
+    local -n user=$2
+
+    local args
+    local -r shortopts=hu:
+    local -r longopts=help,user:
+
+    shift 2
+    args=$(
+        $GETOPT_CMD --shell bash --options "$shortopts"  \
+                --longoptions "$longopts" --name "$script_name" -- "$@"
+        ) || return 1
+
+    eval set -- "$args"
+
+    while true; do
+        case "$1" in
+            -h|--help)
+                usage
+                exit
+                ;;
+            -u|--user)
+                if [[ ! ."$2" =~ \.[_[:alnum:]][-_[:alnum:]]+\$?$ ]] \
+                       || (( ${#2} > 32 )); then
+                    echo "${script_name}: $2: Invalid username" >&2
+                    return 1
+                fi
+                user=$2
+                shift 2
+                ;;
+            --)
+                shift
+                break
+                ;;
+            *)
+                usage
+                return 1
+                ;;
+        esac
+    done
+
+    if (( $# != 1 )); then
+        usage
+        return 1
+    fi
+
+    server=$(sship $1)
+
+    if test ."$server" = .''; then
+        echo "${script_name}: $1: Invalid hostname" >&2
+        usage
+        return 1
+    fi
+}
+
+if test ."$0" = ."${BASH_SOURCE[0]}"; then
+    declare script=$($READLINK_CMD -e "$0")
+    declare script_name=${script##*/}
+
+    declare remote_server=''
+    declare remote_user=''
+
+    parse-command-line remote_server remote_user "$@" || exit $?
+    cache-remote-keys "$remote_server" || exit $?
+    get-remote-age-recipient "$remote_server" "$remote_user"
+fi
