@@ -32,8 +32,8 @@
 # or operating system, you probably want to add a global ignore instead:
 #   git config --global core.excludesfile '~/.gitignore_global'
 
-# Ignore bundler config.
-/.bundle*
+#  Uncomment to ignore bundler config.
+#/.bundle*
 
 # Ignore all logfiles and tempfiles.
 *.log
@@ -68,7 +68,8 @@ npm-debug.log*
 /modules/*/frontend/module/module
 /config/additional_environment.rb
 /config/configuration.yml
-/config/database.yml
+# Uncomment to ignore database.yml.
+#/config/database.yml
 /config/email.yml
 /config/secret_token.yml
 /config/frontend_assets.manifest.json
@@ -120,7 +121,7 @@ structure.sql
 
 # Local development
 # used by dotenv
-/.env.*.local
+g/.env.*.local
 
 # Local development docker
 /.env
@@ -148,6 +149,10 @@ acme.json
 *~
 *.diff
 # asdf-vm local versions of nodejs and ruby
-.tool-versions
+# Uncomment to ignore asdf tool-versions.
+#.tool-versions
 Gemfile.lock.*
 npm-install-error.txt
+*.orig
+
+/config/credentials.yml.enc

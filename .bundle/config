@@ -1,0 +1,4 @@
+---
+BUNDLE_DEPLOYMENT: "false"
+BUNDLE_BIN: "sbin"
+BUNDLE_WITHOUT: "test:development"
