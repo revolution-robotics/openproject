@@ -147,6 +147,7 @@ acme.json
 # Local files
 /config/master.key
 /config/credentials.yml.enc
+/config/revo-dev-secrets.sops.yml
 *~
 *.diff
 # asdf-vm local versions of nodejs and ruby
