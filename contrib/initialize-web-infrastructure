@@ -132,7 +132,7 @@ install-node-dependencies ()
 
     echo "*** Installing Node dependencies..." >&2
     $SUDO_CMD -i -u "${profile[app-owner]}" \
-          RAILS_ENV=production "${profile[app-dir]}/bin/rake" -C "${profile[app-dir]}" yarn:install \
+              $BASH_CMD -c "cd \"${profile[app-dir]}/frontend\" && npm install" \
         || return $?
 }
 
@@ -153,16 +153,8 @@ database-exists-p ()
 {
     local -n settings=$1
 
-    $SUDO_CMD -i -u "${settings[app-owner]}" RAILS_ENV=production \
-          "${profile[app-dir]}/bin/rake" -C "${settings[app-dir]}" db:exists?
-}
-
-database-contains-admin-p ()
-{
-    local -n settings=$1
-
-    $SUDO_CMD -i -u "${settings[app-owner]}" RAILS_ENV=production \
-        "${profile[app-dir]}/bin/rake" -C "${settings[app-dir]}" db:contains_admin?
+    $SUDO_CMD -i -u "${settings[app-owner]}" \
+              RAILS_ENV=production rake -C "${settings[app-dir]}" db:exists?
 }
 
 create-app-database ()
@@ -173,57 +165,29 @@ create-app-database ()
     # if database-exists-p profile; then
     #     return
     # fi
-
-    local -a databases=()
-    local database=''
-
-    # Assert: Database names are suffixed with environment (i.e., _production).
-    mapfile -t databases < <(
-        $ED_CMD -sEe '/^production:/;$g/^  ([^ :]+):/s//\1/p' \
-                "${profile[app-dir]}/config/database.yml"
-    )
-
-    echo "Creating app databases..." >&2
-    for database in "${databases[@]}"; do
-        $SUDO_CMD -i -u "${profile[app-owner]}" RAILS_ENV=production \
-            "${profile[app-dir]}/bin/rake" -C "${profile[app-dir]}" "db:create:${database}" \
-            || return $?
-    done
+    echo "Creating app database..." >&2
+    $SUDO_CMD -i -u "${profile[app-owner]}" \
+              RAILS_ENV=production rake -C "${profile[app-dir]}" db:create \
+        || return $?
 }
 
 load-database-schema ()
 {
     local -n profile=$1
 
-    local -a databases=()
-    local database=''
-
-    # Assert: Database names are suffixed with environment (i.e., _production).
-    mapfile -t databases < <(
-        $ED_CMD -sEe '/^production:/;$g/^  ([^ :]+):/s//\1/p' \
-                "${profile[app-dir]}/config/database.yml"
-    )
-
     echo "Running database migrations..." >&2
-    for database in "${databases[@]}"; do
-        $SUDO_CMD -i -u "${profile[app-owner]}" RAILS_ENV=production \
-            "${profile[app-dir]}/bin/rake" -C "${profile[app-dir]}" "db:migrate:${database}" \
-            || return $?
-    done
-
+    $SUDO_CMD -i -u "${profile[app-owner]}" \
+              RAILS_ENV=production rake -C "${profile[app-dir]}" db:migrate \
+        || return $?
 }
 
 seed-app-database ()
 {
     local -n profile=$1
 
-    if database-exists-p profile && database-contains-admin-p profile; then
-        return
-    fi
-
     echo "Attempting to seed app database..." >&2
-    $SUDO_CMD -i -u "${profile[app-owner]}" RAILS_ENV=production \
-        "${profile[app-dir]}/bin/rake" -C "${profile[app-dir]}" db:seed \
+    $SUDO_CMD -i -u "${profile[app-owner]}" \
+              RAILS_ENV=production rake -C "${profile[app-dir]}" db:seed \
         || true
 }
 
@@ -233,7 +197,7 @@ precompile-assets ()
 
     echo "Precompiling assets..." >&2
     $SUDO_CMD -i -u "${profile[app-owner]}" \
-          RAILS_ENV=production "${profile[app-dir]}/bin/rake" -C "${profile[app-dir]}" assets:precompile \
+              RAILS_ENV=production rake -C "${profile[app-dir]}" assets:precompile \
         || return $?
 
     case "${profile[release-id]}" in
