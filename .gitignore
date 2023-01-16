@@ -146,6 +146,7 @@ acme.json
 
 # Local files
 /config/master.key
+/config/credentials.yml.enc
 *~
 *.diff
 # asdf-vm local versions of nodejs and ruby
@@ -154,5 +155,7 @@ acme.json
 Gemfile.lock.*
 npm-install-error.txt
 *.orig
-
-/config/credentials.yml.enc
+/*.html
+\#*\#
+.\#*
+/contrib/.deploy-state

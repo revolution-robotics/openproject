@@ -292,7 +292,7 @@ add-postgresql-role ()
                   sops exec-env "${profile[app-dir]}/config/database-secrets.sops.yml" \
                   "$PSQL_CMD -tA -U postgres -c \
                              \"SELECT CASE WHEN ( \
-                                       SELECT true FROM pg_roles WHERE rolname = '\${prod_auth_db_user}' \
+                                       SELECT true FROM pg_roles WHERE rolname = '\${prod_db_user}' \
                                ) THEN 'true' ELSE 'false' END;\" >&2" 2>&1 >/dev/null
                )
     exec_status=$?
@@ -310,7 +310,7 @@ add-postgresql-role ()
         $SUDO_CMD -i -u "${profile[app-owner]}" \
                   sops exec-env "${profile[app-dir]}/config/database-secrets.sops.yml" \
                   "$PSQL_CMD -U postgres -c \
-                             \"CREATE ROLE \${prod_auth_db_user} WITH CREATEDB LOGIN PASSWORD '\${prod_auth_db_pass}';\""
+                             \"CREATE ROLE \${prod_db_user} WITH CREATEDB LOGIN PASSWORD '\${prod_db_pass}';\""
         exec_status=$?
     fi
 

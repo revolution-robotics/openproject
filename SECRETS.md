@@ -1,8 +1,8 @@
 # Revo OpenProject Server
 
-revo-openproject is a Rails + PostgreSQL-based authentication server.
+This document explains how to securely configure and run the Revo OpenProject Server.
 
-## Installation
+## Installing from Source
 
 Clone the repository and install dependencies:
 
@@ -54,12 +54,12 @@ production:
 EOF
 ```
 
-Initialize a secrets file, *database-secrets.enc.yml*, with template
+Initialize a secrets file, *database-secrets.sops.yml*, with template
 names and fill in the keyed values of the secrets using the sops
 secrets editor:
 
 ```shell
-EDITOR=ed sops config/database-secrets.enc.yml <<'EOF'
+EDITOR=ed sops config/database-secrets.sops.yml <<'EOF'
 ,d
 r  !sed -rn -e 's/.*\$(.*)$/\1: /p' config/database-credentials.template
 /dev_db_name/s;$;openproject_development;
@@ -79,11 +79,17 @@ where values *openproject_development*, *openproject_test*, ..., *openproject_db
 database is configured for.
 
 Create a Rails credentials file, *config/credentials.yml.enc*, by
-applying the database secrets to the credentials template:
+applying the database secrets to the credentials template:sops exec-env config/database-secrets.enc.yml \
+    'EDITOR=ed bin/rails credentials:edit <<EOF
+r !envsubst <config/database-credentials.template
+wq
+EOF
+'
+
 
 
 ```shell
-sops exec-env config/database-secrets.enc.yml \
+sops exec-env config/database-secrets.sops.yml \
     'EDITOR=ed bin/rails credentials:edit <<EOF
 r !envsubst <config/database-credentials.template
 wq
@@ -94,7 +100,7 @@ EOF
 where the utility `envsubst` is available as part of the *gettext*
 package.
 
-## Deployment
+## Deploying a Production Server
 
 In the following deployment command, let the app runs as system user
 **puma** on remote server **tau**, and let the remote admin username
