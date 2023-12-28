@@ -144,7 +144,7 @@ generate-rails-credentials ()
     $SUDO_CMD -i -u "${profile[app-owner]}" \
           sops exec-env "${profile[app-dir]}/config/database-secrets.sops.yml" \
           "cd ${profile[app-dir]} && EDITOR=ed '${profile[app-dir]}/bin/rails'  \
-              credentials:edit \
+              credentials:edit --environment production \
               <<<$'r !envsubst <${profile[app-dir]}/config/database-credentials.template\nwq\n'" \
         || return $?
 }

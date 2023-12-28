@@ -160,3 +160,6 @@ npm-install-error.txt
 \#*\#
 .\#*
 /contrib/.deploy-state
+/config/credentials/production.key
+/config/credentials/development.key
+/config/credentials/test.key

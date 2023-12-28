@@ -1,14 +1,14 @@
-# Revo OpenProject Server
+# OpenProject Server
 
-This document explains how to securely configure and run the Revo OpenProject Server.
+This document explains how to securely configure and run the OpenProject Server.
 
-## Installing from Source
+## Manual Deployment
 
 Clone the repository and install dependencies:
 
 ```shell
-git clone https://github.com/revolution-robotics.com/revo-openproject.git
-cd revo-openproject
+git clone https://github.com/revolution-robotics.com/openproject.git
+cd openproject
 bundle install
 yarn install
 asdf reshim nodejs
@@ -17,8 +17,8 @@ asdf reshim nodejs
 Initialize proudction database
 
 ```shell
-psql -U postgres -c "create database openproject_production with owner = 'revo';"
-psql -U revo openproject_production <db/structure.sql
+psql -U postgres -c "create database openproject with owner = 'openproject';"
+psql -U openproject openproject <db/structure.sql
 bin/rails db:seed
 bin/rails assets:precompile
 ```
@@ -30,27 +30,12 @@ sops-encrypted to a Rails-encrypted file:
 
 ```shell
 cat >config/database-credentials.template <<'EOF'
-development:
-  database:
-    name: $dev_db_name
-    username: $dev_db_user
-    password: $dev_db_pass
-    host: $dev_db_host
-    port: $dev_db_port
-test:
-  database:
-    name: $test_db_name
-    username: $test_db_user
-    password: $test_db_pass
-    host: $test_db_host
-    port: $test_db_port
-production:
-  database:
-    name: $prod_db_name
-    username: $prod_db_user
-    password: $prod_db_pass
-    host: $prod_db_host
-    port: $prod_db_port
+database:
+  name: $prod_db_name
+  username: $prod_db_user
+  password: $prod_db_pass
+  host: $prod_db_host
+  port: $prod_db_port
 EOF
 ```
 
@@ -78,12 +63,12 @@ where values *openproject_development*, *openproject_test*, ..., *openproject_db
 *localhost*,  etc. are replaced with credentials that the PostgreSQL
 database is configured for.
 
-Create a Rails credentials file, *config/credentials.yml.enc*, by
+Create an encrypted Rails credentials file, *config/credentials/production.yml.enc*, by
 applying the database secrets to the credentials template:
 
 ```shell
 sops exec-env config/database-secrets.sops.yml \
-    'EDITOR=ed bin/rails credentials:edit <<EOF
+    'EDITOR=ed bin/rails credentials:edit --environment production <<EOF
 r !envsubst <config/database-credentials.template
 wq
 EOF
@@ -93,17 +78,18 @@ EOF
 where the utility `envsubst` is available as part of the *gettext*
 package.
 
-## Deploying a Production Server
+## Automated Deployment
 
-In the following deployment command, let the app runs as system user
-**puma** on remote server **tau**, and let the remote admin username
-be **revo**. If account **puma** does not already exist on the remote
+In the following deployment command, the app is run as system user
+**puma** on remote server **tau**, and the admin username on **tau**
+is **revo**. If account **puma** does not already exist on the remote
 system, see, e.g., the script `setup-system-user` from repository
-*fedora-server-setup*.
+*remote-server-setup*.
 
-Add an .ssh/config entry for Host **tau** with sign-in **revo**. Then,
+Add an .ssh/config entry for Host **tau** with login name **revo**. Then,
 in the app repository on the local system, run:
 
 ```shell
-./contrib/deploy-to-remote tau revo puma
+./contrib/deploy-to-remote --admin revo --server tau \
+    --app-owner puma --app-name openproject
 ```
