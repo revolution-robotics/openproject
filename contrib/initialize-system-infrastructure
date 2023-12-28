@@ -10,7 +10,7 @@
 #
 : ${CHECKMODULE_CMD:='/usr/bin/checkmodule'}
 : ${CUT_CMD:='/usr/bin/cut'}
-: ${DNF_CMD:='/usr/bin/dnf'}
+: ${DNF_CMD:='/usr/bin/dnf5'}
 : ${FIREWALL_CMD:='/usr/bin/firewall-cmd'}
 : ${GETENT_CMD:='/usr/bin/getent'}
 : ${GREP_CMD:='/usr/bin/grep'}

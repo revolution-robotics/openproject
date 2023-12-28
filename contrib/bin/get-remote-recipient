@@ -12,12 +12,12 @@
 : ${AWK_CMD:='/usr/bin/gawk'}
 : ${CP_CMD:='/bin/cp'}
 : ${GETOPT_CMD:='/usr/bin/getopt'}
-: ${MKTEMP_CMD:='/usr/bin/mktemp'}
-: ${READLINK_CMD:='/usr/bin/readlink'}
+: ${MKTEMP_CMD:='/bin/mktemp'}
+: ${READLINK_CMD:='/bin/readlink'}
 : ${RM_CMD:='/bin/rm'}
+: ${SORT_CMD:='/usr/bin/sort'}
 : ${SSH_CMD:='/usr/bin/ssh'}
 : ${SSH_KEYSCAN_CMD:='/usr/bin/ssh-keyscan'}
-: ${SORT_CMD:='/usr/bin/sort'}
 : ${TR_CMD:='/usr/bin/tr'}
 
 usage ()
@@ -34,10 +34,12 @@ sship ()
         local user_at=${BASH_REMATCH[1]}
         local host=${BASH_REMATCH[2]}
         local colon_path=${BASH_REMATCH[3]}
-        local hostname=$(
+        local hostname=''
+
+        hostname=$(
             $SSH_CMD -G "$host" |
                 $AWK_CMD '/^hostname/ { printf $2 }'
-              )
+                ) || return $?
 
         echo "${user_at}${hostname}${colon_path}"
     fi
@@ -140,10 +142,14 @@ parse-command-line ()
         echo "${script_name}: $1: Invalid hostname" >&2
         usage
         return 1
+    elif [[ ."$user" = .'' && ."$server" =~ \.([^@]+@)?([^:]+)(:[^:]+)? ]]; then
+        user=${BASH_REMATCH[1]%@}
     fi
 }
 
 if test ."$0" = ."${BASH_SOURCE[0]}"; then
+    set -o pipefail
+
     declare script=$($READLINK_CMD -e "$0")
     declare script_name=${script##*/}
 

@@ -24,16 +24,15 @@
 #    add recipients. If no recipients are given on the command line,
 #    they are read from standard input, one per line.
 #
-
 : ${ED_CMD:='/usr/local/bin/ed'}
 : ${GETOPT_CMD:='/usr/bin/getopt'}
-: ${MKTEMP_CMD:='/usr/bin/mktemp'}
+: ${MKTEMP_CMD:='/bin/mktemp'}
 : ${MV_CMD:='/bin/mv'}
-: ${READLINK_CMD:='/usr/bin/readlink'}
+: ${READLINK_CMD:='/bin/readlink'}
 : ${RM_CMD:='/bin/rm'}
-: ${SOPS_CMD:="${HOME}/.asdf/shims/sops"}
+: ${SOPS_CMD:='/home/alm/.asdf/shims/sops'}
 : ${SORT_CMD:='/usr/bin/sort'}
-: ${YQ_CMD:="${HOME}/.asdf/shims/yq"}
+: ${YQ_CMD:='/home/alm/.asdf/shims/yq'}
 
 usage ()
 {
@@ -57,14 +56,14 @@ assoc-list ()
     local -n _list=$1
     local -n _assoc=$2
 
-    if test ."${_list[@]}" = .''; then
+    if (( ${#_list[*]} == 0 )); then
         return
     fi
 
-    local -i i
+    local elm=''
 
-    for i in "${!_list[@]}"; do
-        _assoc[${_list[i]}]=$(( i + 1 ))
+    for elm in "${_list[@]}"; do
+        _assoc[$elm]=1
     done
 }
 
@@ -73,10 +72,14 @@ is-element-of ()
     local -n list=$1
     local element=$2
 
-    local -A assoc
+    if test ."$element" = .''; then
+        return 1
+    fi
+
+    local -A assoc=()
 
     assoc-list list assoc
-    (( assoc[${element}] > 0 ))
+    (( assoc[${element}] ))
 }
 
 get-current-recipients ()
