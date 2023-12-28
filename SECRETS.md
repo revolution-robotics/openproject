@@ -79,14 +79,7 @@ where values *openproject_development*, *openproject_test*, ..., *openproject_db
 database is configured for.
 
 Create a Rails credentials file, *config/credentials.yml.enc*, by
-applying the database secrets to the credentials template:sops exec-env config/database-secrets.enc.yml \
-    'EDITOR=ed bin/rails credentials:edit <<EOF
-r !envsubst <config/database-credentials.template
-wq
-EOF
-'
-
-
+applying the database secrets to the credentials template:
 
 ```shell
 sops exec-env config/database-secrets.sops.yml \
